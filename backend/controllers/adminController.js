@@ -12,6 +12,17 @@ const {
   createAdminToken,
   verifyAdminToken
 } = require('../utils/cookieUtils');
+const { extractAdminToken } = require('../middleware/verifyAdminAuth');
+
+function normalizeHHMM(hhmm) {
+  if (!hhmm || typeof hhmm !== 'string') return null;
+  const match = hhmm.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+  const hNum = Number(match[1]);
+  const mNum = Number(match[2]);
+  if (hNum < 0 || hNum > 23 || mNum < 0 || mNum > 59) return null;
+  return `${String(hNum).padStart(2, '0')}:${String(mNum).padStart(2, '0')}`;
+}
 
 /**
  * POST /api/admin/login
@@ -37,7 +48,7 @@ function adminLogin(req, res) {
   const token = createAdminToken(expectedUsername);
   res.cookie('adminToken', token, getCookieOptions(req, ONE_DAY_MS * 7));
 
-  return res.json({ authenticated: true });
+  return res.json({ authenticated: true, token });
 }
 
 /**
@@ -52,7 +63,8 @@ function adminLogout(req, res) {
  * GET /api/admin/status
  */
 function getAdminStatus(req, res) {
-  const authenticated = verifyAdminToken(req.cookies?.adminToken);
+  const token = extractAdminToken(req);
+  const authenticated = verifyAdminToken(token);
   return res.json({ authenticated });
 }
 
@@ -89,10 +101,12 @@ async function getMonthlyLedger(req, res) {
       deviceSignature: emp.deviceSignature || { platform: '', screenSize: '' }
     }));
 
+    const token = extractAdminToken(req);
+
     return res.json({
       yearMonth,
       todayIST,
-      authenticated: verifyAdminToken(req.cookies?.adminToken),
+      authenticated: verifyAdminToken(token),
       employees: safeEmployees,
       records,
       pendingApprovals
@@ -147,140 +161,142 @@ async function manualOverride(req, res) {
       });
     }
 
-    if (!checkInHHMM || !/^\d{2}:\d{2}$/.test(checkInHHMM)) {
-      return res.status(400).json({
-        error: 'Valid Check-In time (HH:MM) is required.'
-      });
-    }
-
-    const checkInTime = parseISTDateTime(cleanDate, checkInHHMM);
-    const estCheckOutTime = new Date(
-      checkInTime.getTime() + REQUIRED_SHIFT_MINUTES * 60 * 1000
-    );
-
-    const existing = await Attendance.findOne({
-      employeeId: normalizedId,
-      date: cleanDate
-    });
-
-    const trimmedNotes = String(dailyTask || '').trim();
-
-    if (normalizedStatus === 'CURRENTLY_WORKING') {
-      const updated = await Attendance.findOneAndUpdate(
-        { employeeId: normalizedId, date: cleanDate },
-        {
-          $set: {
-            employeeId: normalizedId,
-            name: employee.name,
-            date: cleanDate,
-            checkInTime,
-            estCheckOutTime,
-            checkOutTime: null,
-            totalWorkedMinutes: 0,
-            shortfallMinutes: 0,
-            dailyTask: trimmedNotes,
-            status: 'CURRENTLY_WORKING',
-            checkInMethod: existing?.checkInMethod || 'ADMIN_MANUAL',
-            checkOutMethod: null
-          }
-        },
-        { upsert: true, new: true, runValidators: true }
-      );
-      return res.json({ shift: updated });
-    }
-
-    if (!checkOutHHMM || !/^\d{2}:\d{2}$/.test(checkOutHHMM)) {
-      return res.status(400).json({
-        error: 'Valid Check-Out time (HH:MM) is required for Completed status.'
-      });
-    }
-
-    const checkOutTime = parseISTDateTime(cleanDate, checkOutHHMM);
-    if (checkOutTime.getTime() < checkInTime.getTime()) {
-      return res.status(400).json({
-        error: 'Check-Out time cannot be earlier than Check-In time.'
-      });
-    }
-
-    const { totalWorkedMinutes, shortfallMinutes } = calculateShiftDurations(
-      checkInTime,
-      checkOutTime
-    );
-
-    const updated = await Attendance.findOneAndUpdate(
-      { employeeId: normalizedId, date: cleanDate },
-      {
-        $set: {
-          employeeId: normalizedId,
-          name: employee.name,
-          date: cleanDate,
-          checkInTime,
-          estCheckOutTime,
-          checkOutTime,
-          totalWorkedMinutes,
-          shortfallMinutes,
-          dailyTask:
-            trimmedNotes || existing?.dailyTask || 'Approved by Admin',
-          status: 'COMPLETED',
-          checkInMethod: existing?.checkInMethod || 'ADMIN_MANUAL',
-          checkOutMethod: 'ADMIN_APPROVED'
-        }
-      },
-      { upsert: true, new: true, runValidators: true }
-    );
-
-    return res.json({ shift: updated });
-  } catch (err) {
-    console.error('manualOverride error:', err);
-    return res.status(500).json({ error: 'Failed to save manual attendance record.' });
-  }
-}
-
-/**
- * POST /api/admin/unbind-device (Protected by verifyAdminAuth)
- */
-async function unbindDevice(req, res) {
-  try {
-    const normalizedId = String(req.body?.employeeId || '').trim().toUpperCase();
-    if (!normalizedId) {
-      return res.status(400).json({ error: 'Employee ID is required.' });
-    }
-
-    const employee = await Employee.findOneAndUpdate(
-      { employeeId: normalizedId },
-      {
-        $set: {
-          registeredDeviceToken: null,
-          deviceSignature: { platform: '', screenSize: '' }
-        }
-      },
-      { new: true }
-    );
-
-    if (!employee) {
-      return res.status(404).json({ error: `Employee ${normalizedId} not found.` });
-    }
-
-    return res.json({
-      unbound: true,
-      employee: {
-        employeeId: employee.employeeId,
-        name: employee.name,
-        isDeviceBound: false
+      const parsedInHHMM = normalizeHHMM(checkInHHMM);
+      if (!parsedInHHMM) {
+        return res.status(400).json({
+          error: 'Valid Check-In time (HH:MM) is required.'
+        });
       }
-    });
-  } catch (err) {
-    console.error('unbindDevice error:', err);
-    return res.status(500).json({ error: 'Failed to unbind employee device.' });
-  }
-}
 
-module.exports = {
-  adminLogin,
-  adminLogout,
-  getAdminStatus,
-  getMonthlyLedger,
-  manualOverride,
-  unbindDevice
-};
+      const checkInTime = parseISTDateTime(cleanDate, parsedInHHMM);
+      const estCheckOutTime = new Date(
+        checkInTime.getTime() + REQUIRED_SHIFT_MINUTES * 60 * 1000
+      );
 
+      const existing = await Attendance.findOne({
+        employeeId: normalizedId,
+        date: cleanDate
+      });
+
+      const trimmedNotes = String(dailyTask || '').trim();
+
+      if (normalizedStatus === 'CURRENTLY_WORKING') {
+        const updated = await Attendance.findOneAndUpdate(
+          { employeeId: normalizedId, date: cleanDate },
+          {
+            $set: {
+              employeeId: normalizedId,
+              name: employee.name,
+              date: cleanDate,
+              checkInTime,
+              estCheckOutTime,
+              checkOutTime: null,
+              totalWorkedMinutes: 0,
+              shortfallMinutes: 0,
+              dailyTask: trimmedNotes,
+              status: 'CURRENTLY_WORKING',
+              checkInMethod: existing?.checkInMethod || 'ADMIN_MANUAL',
+              checkOutMethod: null
+            }
+          },
+          { upsert: true, new: true, runValidators: true }
+        );
+        return res.json({ shift: updated });
+      }
+
+        const parsedOutHHMM = normalizeHHMM(checkOutHHMM);
+        if (!parsedOutHHMM) {
+          return res.status(400).json({
+            error: 'Valid Check-Out time (HH:MM) is required for Completed status.'
+          });
+        }
+
+        const checkOutTime = parseISTDateTime(cleanDate, parsedOutHHMM);
+        if (checkOutTime.getTime() < checkInTime.getTime()) {
+          return res.status(400).json({
+            error: 'Check-Out time cannot be earlier than Check-In time.'
+          });
+        }
+
+        const { totalWorkedMinutes, shortfallMinutes } = calculateShiftDurations(
+          checkInTime,
+          checkOutTime
+        );
+
+        const updated = await Attendance.findOneAndUpdate(
+          { employeeId: normalizedId, date: cleanDate },
+          {
+            $set: {
+              employeeId: normalizedId,
+              name: employee.name,
+              date: cleanDate,
+              checkInTime,
+              estCheckOutTime,
+              checkOutTime,
+              totalWorkedMinutes,
+              shortfallMinutes,
+              dailyTask:
+                trimmedNotes || existing?.dailyTask || 'Approved by Admin',
+              status: 'COMPLETED',
+              checkInMethod: existing?.checkInMethod || 'ADMIN_MANUAL',
+              checkOutMethod: 'ADMIN_APPROVED'
+            }
+          },
+          { upsert: true, new: true, runValidators: true }
+        );
+
+        return res.json({ shift: updated });
+      } catch (err) {
+        console.error('manualOverride error:', err);
+        return res.status(500).json({ error: 'Failed to save manual attendance record.' });
+      }
+    }
+
+    /**
+     * POST /api/admin/unbind-device (Protected by verifyAdminAuth)
+     */
+    async function unbindDevice(req, res) {
+      try {
+        const normalizedId = String(req.body?.employeeId || '').trim().toUpperCase();
+        if (!normalizedId) {
+          return res.status(400).json({ error: 'Employee ID is required.' });
+        }
+
+        const employee = await Employee.findOneAndUpdate(
+          { employeeId: normalizedId },
+          {
+            $set: {
+              registeredDeviceToken: null,
+              deviceSignature: { platform: '', screenSize: '' }
+            }
+          },
+          { new: true }
+        );
+
+        if (!employee) {
+          return res.status(404).json({ error: `Employee ${normalizedId} not found.` });
+        }
+
+        return res.json({
+          unbound: true,
+          employee: {
+            employeeId: employee.employeeId,
+            name: employee.name,
+            isDeviceBound: false
+          }
+        });
+      } catch (err) {
+        console.error('unbindDevice error:', err);
+        return res.status(500).json({ error: 'Failed to unbind employee device.' });
+      }
+    }
+
+    module.exports = {
+      adminLogin,
+      adminLogout,
+      getAdminStatus,
+      getMonthlyLedger,
+      manualOverride,
+  unbindDevice,
+      normalizeHHMM
+    };

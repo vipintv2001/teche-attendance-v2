@@ -16,21 +16,33 @@ const app = express();
 // Trust the first reverse proxy for accurate client IP and HTTPS detection (iOS Safari cookies)
 app.set('trust proxy', 1);
 
-const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:5173')
+const rawOrigins = (process.env.FRONTEND_URL || 'http://localhost:5173')
   .split(',')
-  .map((o) => o.trim())
+  .map((o) => o.trim().replace(/\/$/, ''))
   .filter(Boolean);
+
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+  const clean = origin.replace(/\/$/, '');
+  if (rawOrigins.includes(clean)) return true;
+  if (/^https:\/\/teche-attendance[a-z0-9-]*\.vercel\.app$/i.test(clean)) return true;
+  if (/^http:\/\/localhost(:\d+)?$/i.test(clean)) return true;
+  if (/^http:\/\/127\.0\.0\.1(:\d+)?$/i.test(clean)) return true;
+  return false;
+}
 
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
-      return callback(new Error('Not allowed by CORS'));
-    },
-    credentials: true
-  })
+        if (isAllowedOrigin(origin)) {
+          return callback(null, true);
+        }
+        return callback(new Error(`Not allowed by CORS: ${origin}`));
+      },
+      credentials: true,
+        allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-token', 'x-device-token'],
+          methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
+    })
 );
 
 app.use(express.json({ limit: '1mb' }));

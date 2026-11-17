@@ -4,26 +4,26 @@ const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Builds HttpOnly, Secure (in HTTPS/production), SameSite=Lax cookie options.
- * Preserves iOS Safari 16.4+ compatibility across reverse proxies.
+ * Builds HttpOnly, Secure, SameSite cookie options.
+ * When on HTTPS (e.g. Render/Vercel production), sets sameSite: 'none' and secure: true
+ * so cross-site fetch requests with credentials: 'include' can send cookies.
+ * On local HTTP development, falls back to secure: false and sameSite: 'lax'.
  */
 function getCookieOptions(req, maxAgeMs = ONE_YEAR_MS) {
   const isHttps =
     req.secure ||
     req.headers['x-forwarded-proto'] === 'https' ||
-    process.env.NODE_ENV === 'production';
+  process.env.NODE_ENV === 'production' ||
+    (typeof req.headers.origin === 'string' && req.headers.origin.startsWith('https://')) ||
+    (typeof process.env.FRONTEND_URL === 'string' && process.env.FRONTEND_URL.startsWith('https://'));
 
-  const secure =
-    process.env.COOKIE_SECURE === 'false'
-      ? false
-      : process.env.COOKIE_SECURE === 'true'
-        ? true
-        : isHttps;
+  const secure = process.env.COOKIE_SECURE === 'false' ? false : isHttps;
+  const sameSite = secure ? 'none' : 'lax';
 
   return {
     httpOnly: true,
     secure,
-    sameSite: 'lax',
+    sameSite,
     maxAge: maxAgeMs,
     path: '/'
   };
@@ -95,4 +95,3 @@ module.exports = {
   createAdminToken,
   verifyAdminToken
 };
-
