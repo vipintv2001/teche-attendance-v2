@@ -29,16 +29,18 @@ export default function ManualOverrideModal({
     setDate(initialDate || getTodayISTClient());
 
     if (existingRecord) {
-      setCheckInHHMM(
-        existingRecord.checkInTime
-          ? formatTime24hIST(existingRecord.checkInTime)
-          : '09:30'
-      );
-      setCheckOutHHMM(
-        existingRecord.checkOutTime
-          ? formatTime24hIST(existingRecord.checkOutTime)
-          : '17:00'
-      );
+      const inHHMM = existingRecord.checkInTime
+        ? formatTime24hIST(existingRecord.checkInTime)
+        : '09:30';
+      setCheckInHHMM(inHHMM);
+
+      const outHHMM = existingRecord.checkOutTime
+        ? formatTime24hIST(existingRecord.checkOutTime)
+        : existingRecord.estCheckOutTime
+          ? formatTime24hIST(existingRecord.estCheckOutTime)
+          : '17:00';
+      setCheckOutHHMM(outHHMM);
+
       setStatus(
         existingRecord.status === 'CURRENTLY_WORKING'
           ? 'CURRENTLY_WORKING'

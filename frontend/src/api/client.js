@@ -1,12 +1,29 @@
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 
+let inMemoryAdminToken = null;
+
+export function setInMemoryAdminToken(token) {
+  inMemoryAdminToken = token || null;
+}
+
+export function getInMemoryAdminToken() {
+  return inMemoryAdminToken;
+}
+
 async function apiRequest(path, options = {}) {
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(options.headers || {})
+  };
+
+  if (inMemoryAdminToken) {
+    headers['x-admin-token'] = inMemoryAdminToken;
+    headers['Authorization'] = `Bearer ${inMemoryAdminToken}`;
+  }
+
   const response = await fetch(`${API_BASE}${path}`, {
     credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options.headers || {})
-    },
+    headers,
     ...options
   });
 
@@ -18,7 +35,7 @@ async function apiRequest(path, options = {}) {
   if (!response.ok) {
     const error = new Error(
       (typeof data === 'object' && data?.error) ||
-        `Request failed with status ${response.status}`
+      `Request failed with status ${response.status}`
     );
     error.status = response.status;
     error.data = data;
@@ -63,30 +80,34 @@ export function fetchMonthlyLedger(yearMonth) {
   return apiRequest(`/api/admin/monthly-ledger?${params.toString()}`);
 }
 
-export function postAdminLogin(credentials) {
-  return apiRequest('/api/admin/login', {
-    method: 'POST',
-    body: JSON.stringify(credentials)
-  });
-}
+    export async function postAdminLogin(credentials) {
+    const data = await apiRequest('/api/admin/login', {
+      method: 'POST',
+      body: JSON.stringify(credentials)
+    });
+    if(data?.token) {
+      inMemoryAdminToken = data.token;
+    }
+  return data;
+  }
 
-export function postAdminLogout() {
-  return apiRequest('/api/admin/logout', {
-    method: 'POST'
-  });
-}
+    export async function postAdminLogout() {
+      inMemoryAdminToken = null;
+      return apiRequest('/api/admin/logout', {
+        method: 'POST'
+      });
+    }
 
-export function postManualOverride(payload) {
-  return apiRequest('/api/admin/manual-override', {
-    method: 'POST',
-    body: JSON.stringify(payload)
-  });
-}
+    export function postManualOverride(payload) {
+      return apiRequest('/api/admin/manual-override', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+    }
 
-export function postUnbindDevice(employeeId) {
-  return apiRequest('/api/admin/unbind-device', {
-    method: 'POST',
-    body: JSON.stringify({ employeeId })
-  });
-}
-
+    export function postUnbindDevice(employeeId) {
+      return apiRequest('/api/admin/unbind-device', {
+        method: 'POST',
+        body: JSON.stringify({ employeeId })
+      });
+    }

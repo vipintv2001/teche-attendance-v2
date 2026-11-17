@@ -24,12 +24,15 @@ export function formatTime24hIST(dateInput) {
   if (!dateInput) return '--';
   const d = new Date(dateInput);
   if (Number.isNaN(d.getTime())) return '--';
-  return new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Asia/Kolkata',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false
-  }).format(d);
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Kolkata',
+      hour: '2-digit',
+      minute: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(d);
+  const hour = parts.find((p) => p.type === 'hour')?.value || '00';
+  const minute = parts.find((p) => p.type === 'minute')?.value || '00';
+  return `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`;
 }
 
 export function formatDatePretty(yyyyMmDd) {
