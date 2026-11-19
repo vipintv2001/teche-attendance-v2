@@ -2,6 +2,7 @@ import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable/es';
 import {
   REQUIRED_SHIFT_MINUTES,
+  HALF_DAY_SHIFT_MINUTES,
   formatDuration,
   formatTime12hIST,
   formatDatePretty,
@@ -12,7 +13,8 @@ export function generateDailyAttendancePdf({
   dateStr,
   todayIST,
   employees,
-  recordsByKey
+  recordsByKey,
+  holiday
 }) {
   const doc = new jsPDF({
     orientation: 'landscape',
@@ -23,6 +25,10 @@ export function generateDailyAttendancePdf({
   const [y, m, d] = dateStr.split('-').map(Number);
   const isSunday = new Date(Date.UTC(y, m - 1, d)).getUTCDay() === 0;
   const isFuture = dateStr > todayIST;
+  const isFullHoliday = holiday?.type === 'HOLIDAY';
+  const isHalfDay = holiday?.type === 'HALF_DAY';
+  const targetShiftMinutes = isHalfDay ? HALF_DAY_SHIFT_MINUTES : REQUIRED_SHIFT_MINUTES;
+  const targetShiftLabel = isHalfDay ? '3h 45m (225 mins) [Half-Day]' : '7h 30m (450 mins)';
 
   doc.setFontSize(15);
   doc.setTextColor(15, 23, 42);
@@ -30,13 +36,16 @@ export function generateDailyAttendancePdf({
 
   doc.setFontSize(10);
   doc.setTextColor(71, 85, 105);
+  const holidayNote = holiday ? `   |   ${holiday.type}: ${holiday.title}` : '';
   doc.text(
-    `Date: ${formatDatePretty(dateStr)} (${dateStr})   |   Required Shift: 7h 30m (450 mins)   |   Timezone: IST (Asia/Kolkata)`,
+    `Date: ${formatDatePretty(dateStr)} (${dateStr})   |   Required Shift: ${targetShiftLabel}${holidayNote}   |   Timezone: IST`,
     40,
     56
   );
 
-  const body = employees.map((emp) => {
+  const activeEmployees = employees.filter((emp) => emp.isActive !== false);
+
+  const body = activeEmployees.map((emp) => {
     const record = recordsByKey.get(`${emp.employeeId}__${dateStr}`);
     if (record) {
       const workedStr =
@@ -45,9 +54,13 @@ export function generateDailyAttendancePdf({
           : '--';
       const shortfallStr =
         record.status === 'COMPLETED'
-          ? formatDuration(record.shortfallMinutes)
+          ? formatDuration(
+              record.shortfallMinutes !== undefined
+                ? record.shortfallMinutes
+                : Math.max(0, targetShiftMinutes - (record.totalWorkedMinutes || 0))
+            )
           : record.status === 'MISSING_CHECKOUT'
-            ? formatDuration(REQUIRED_SHIFT_MINUTES)
+            ? formatDuration(targetShiftMinutes)
             : '--';
 
       return [
@@ -65,6 +78,9 @@ export function generateDailyAttendancePdf({
     if (isSunday) {
       return [emp.employeeId, emp.name, '--', '--', '--', '--', 'HOLIDAY', 'Sunday Holiday'];
     }
+    if (isFullHoliday) {
+      return [emp.employeeId, emp.name, '--', '--', '--', '--', 'HOLIDAY', holiday.title];
+    }
     if (isFuture) {
       return [emp.employeeId, emp.name, '--', '--', '--', '--', 'UPCOMING', '--'];
     }
@@ -75,7 +91,7 @@ export function generateDailyAttendancePdf({
       '--',
       '--',
       '0h 0m',
-      formatDuration(REQUIRED_SHIFT_MINUTES),
+      formatDuration(targetShiftMinutes),
       'ABSENT',
       '--'
     ];
@@ -90,7 +106,7 @@ export function generateDailyAttendancePdf({
         'Check-In',
         'Check-Out',
         'Total Time',
-        'Shortfall (vs 7h 30m)',
+        `Shortfall (vs ${isHalfDay ? '3h 45m' : '7h 30m'})`,
         'Status',
         'Daily Activity Summary'
       ]
@@ -114,8 +130,8 @@ export function generateDailyAttendancePdf({
       2: { cellWidth: 62 },
       3: { cellWidth: 62 },
       4: { cellWidth: 58 },
-      5: { cellWidth: 78 },
-      6: { cellWidth: 92 },
+      5: { cellWidth: 88 },
+      6: { cellWidth: 82 },
       7: { cellWidth: 'auto' }
     },
     didParseCell(data) {
@@ -126,6 +142,9 @@ export function generateDailyAttendancePdf({
           data.cell.styles.fontStyle = 'bold';
         } else if (val === 'COMPLETED') {
           data.cell.styles.textColor = [4, 120, 87];
+          data.cell.styles.fontStyle = 'bold';
+        } else if (val === 'HOLIDAY') {
+          data.cell.styles.textColor = [180, 83, 9];
           data.cell.styles.fontStyle = 'bold';
         }
       }
@@ -139,7 +158,8 @@ export function generateMonthlySummaryPdf({
   yearMonth,
   todayIST,
   employees,
-  recordsByKey
+  recordsByKey,
+  holidayMap = new Map()
 }) {
   const doc = new jsPDF({
     orientation: 'landscape',
@@ -148,9 +168,13 @@ export function generateMonthlySummaryPdf({
   });
 
   const allDays = getDaysInMonth(yearMonth);
-  const elapsedWorkingDays = allDays.filter(
-    (d) => !d.isSunday && d.dateStr <= todayIST
-  );
+  // Exclude Sundays AND full public holidays from elapsed working days
+  const elapsedWorkingDays = allDays.filter((d) => {
+    if (d.isSunday) return false;
+    const h = holidayMap.get(d.dateStr);
+    if (h?.type === 'HOLIDAY') return false;
+    return d.dateStr <= todayIST;
+  });
 
   doc.setFontSize(15);
   doc.setTextColor(15, 23, 42);
@@ -159,37 +183,41 @@ export function generateMonthlySummaryPdf({
   doc.setFontSize(10);
   doc.setTextColor(71, 85, 105);
   doc.text(
-    `Ledger Period: ${yearMonth}   |   Elapsed Working Days (Excl. Sundays): ${elapsedWorkingDays.length}   |   Standard Shift: 7h 30m`,
+    `Ledger Period: ${yearMonth}   |   Elapsed Working Days (Excl. Sundays & Holidays): ${elapsedWorkingDays.length}   |   Standard Shift: 7h 30m / Half-Day: 3h 45m`,
     40,
     56
   );
 
-  const body = employees.map((emp) => {
+  const activeEmployees = employees.filter((emp) => emp.isActive !== false);
+
+  const body = activeEmployees.map((emp) => {
     let presentDays = 0;
     let totalWorkedMinutes = 0;
+    let expectedMinutes = 0;
     let totalShortfallMinutes = 0;
 
     for (const dayInfo of elapsedWorkingDays) {
+      const h = holidayMap.get(dayInfo.dateStr);
+      const isHalfDay = h?.type === 'HALF_DAY';
+      const targetMins = isHalfDay ? HALF_DAY_SHIFT_MINUTES : REQUIRED_SHIFT_MINUTES;
+
       const record = recordsByKey.get(`${emp.employeeId}__${dayInfo.dateStr}`);
       if (record) {
         presentDays += 1;
+        expectedMinutes += targetMins;
+        const worked = Number(record.totalWorkedMinutes) || 0;
+        totalWorkedMinutes += worked;
+
         if (record.status === 'COMPLETED') {
-          const worked = Number(record.totalWorkedMinutes) || 0;
-          const shortfall =
-            record.shortfallMinutes !== undefined && record.shortfallMinutes !== null
-              ? Number(record.shortfallMinutes)
-              : Math.max(0, REQUIRED_SHIFT_MINUTES - worked);
-          totalWorkedMinutes += worked;
-          totalShortfallMinutes += shortfall;
+          totalShortfallMinutes += Math.max(0, targetMins - worked);
         } else if (record.status === 'MISSING_CHECKOUT') {
-          totalShortfallMinutes += REQUIRED_SHIFT_MINUTES;
+          totalShortfallMinutes += targetMins;
         }
       }
     }
 
     const totalWorkingDays = elapsedWorkingDays.length;
     const absentDays = Math.max(0, totalWorkingDays - presentDays);
-    const expectedMinutes = presentDays * REQUIRED_SHIFT_MINUTES;
     const attendancePct =
       totalWorkingDays > 0
         ? `${((presentDays / totalWorkingDays) * 100).toFixed(1)}%`
@@ -251,4 +279,3 @@ export function generateMonthlySummaryPdf({
 
   doc.save(`TECHE_Monthly_Attendance_Report_${yearMonth}.pdf`);
 }
-

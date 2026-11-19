@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const webpush = require('web-push');
 const Employee = require('../models/Employee');
 const Attendance = require('../models/Attendance');
+const Holiday = require('../models/Holiday');
 const { getTodayIST } = require('../utils/istTime');
 
 let vapidConfigured = false;
@@ -50,13 +51,21 @@ async function sendNotificationSafe(employee, payload) {
 async function sendMorningCheckInReminders() {
   try {
     const todayIST = getTodayIST();
+
+    // Skip morning reminder if today is marked as a full public holiday
+    const isHoliday = await Holiday.findOne({ date: todayIST, type: 'HOLIDAY' });
+    if (isHoliday) {
+      return;
+    }
+
     const todayRecords = await Attendance.find({ date: todayIST })
       .select('employeeId -_id')
       .lean();
     const checkedInIds = new Set(todayRecords.map((r) => r.employeeId));
 
     const employees = await Employee.find({
-      pushSubscription: { $ne: null }
+      pushSubscription: { $ne: null },
+      isActive: { $ne: false }
     });
 
     const targets = employees.filter(
@@ -92,7 +101,8 @@ async function sendEveningCheckOutReminders() {
     const activeIds = activeRecords.map((r) => r.employeeId);
     const employees = await Employee.find({
       employeeId: { $in: activeIds },
-      pushSubscription: { $ne: null }
+      pushSubscription: { $ne: null },
+      isActive: { $ne: false }
     });
 
     await Promise.all(
@@ -152,4 +162,3 @@ module.exports = {
   sendEveningCheckOutReminders,
   markMissingCheckoutsAtMidnight
 };
-

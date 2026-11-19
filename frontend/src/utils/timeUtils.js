@@ -1,4 +1,5 @@
 export const REQUIRED_SHIFT_MINUTES = 450; // 7h 30m
+export const HALF_DAY_SHIFT_MINUTES = 225; // 3h 45m
 
 export function formatDuration(totalMinutes) {
   const safeMins = Math.max(0, Math.floor(Number(totalMinutes) || 0));

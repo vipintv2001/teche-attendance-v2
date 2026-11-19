@@ -103,6 +103,24 @@ export default function ManualOverrideModal({
           </button>
         </div>
 
+        {existingRecord && (
+          <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl bg-slate-50 p-2.5 text-xs ring-1 ring-slate-200">
+            <span className="font-semibold text-slate-600">Verification:</span>
+            <span className="rounded bg-white px-2 py-0.5 text-slate-700 ring-1 ring-slate-200">
+              In: {existingRecord.checkInMethod || 'N/A'}
+            </span>
+            <span
+              className={`rounded px-2 py-0.5 ring-1 ${
+                existingRecord.checkOutMethod === 'REMOTE_CHECKOUT'
+                  ? 'bg-rose-50 font-bold text-rose-700 ring-rose-200'
+                  : 'bg-white text-slate-700 ring-slate-200'
+              }`}
+            >
+              Out: {existingRecord.checkOutMethod || 'Not checked out'}
+            </span>
+          </div>
+        )}
+
         <form onSubmit={handleSubmit} className="mt-5 space-y-4">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>

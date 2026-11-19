@@ -1,7 +1,9 @@
 const Employee = require('../models/Employee');
 const Attendance = require('../models/Attendance');
+const Holiday = require('../models/Holiday');
 const {
   REQUIRED_SHIFT_MINUTES,
+  HALF_DAY_SHIFT_MINUTES,
   getTodayIST,
   calculateShiftDurations
 } = require('../utils/istTime');
@@ -9,8 +11,8 @@ const { setDeviceTokenCookie } = require('../utils/cookieUtils');
 const { findBoundEmployee, sanitizeEmployee } = require('../utils/deviceLookup');
 const {
   extractClientIp,
-  normalizeIp,
-  haversineDistanceMeters
+  haversineDistanceMeters,
+  getEffectiveOfficeIp
 } = require('../middleware/verifyOfficePresence');
 
 async function findPendingMissedShift(employeeId, todayIST) {
@@ -21,9 +23,9 @@ async function findPendingMissedShift(employeeId, todayIST) {
   }).sort({ date: -1 });
 }
 
-function resolveCheckOutMethod(req) {
+async function resolveCheckOutMethod(req) {
   const clientIp = extractClientIp(req);
-  const officePublicIp = normalizeIp(process.env.OFFICE_PUBLIC_IP || '');
+  const officePublicIp = await getEffectiveOfficeIp();
   if (officePublicIp && clientIp === officePublicIp) {
     return 'OFFICE_WIFI';
   }
@@ -62,8 +64,11 @@ async function getSession(req, res) {
     const { platform = '', screenSize = '' } = req.query;
     const employee = await findBoundEmployee(req, platform, screenSize);
 
-    if (!employee) {
-      const unboundDocs = await Employee.find({ registeredDeviceToken: null })
+    if (!employee || employee.isActive === false) {
+      const unboundDocs = await Employee.find({
+        registeredDeviceToken: null,
+        isActive: { $ne: false }
+      })
         .select('employeeId name -_id')
         .sort({ employeeId: 1 });
 
@@ -139,6 +144,12 @@ async function checkIn(req, res) {
     let employee = await findBoundEmployee(req, cleanPlatform, cleanScreen);
 
     if (employee) {
+      if (employee.isActive === false) {
+        return res.status(403).json({
+          error: `Employee account ${employee.employeeId} has been archived. Please contact Admin.`
+        });
+      }
+
       // Anti-spoofing check 1: Device already bound to another employee
       if (requestedId && employee.employeeId !== requestedId) {
         return res.status(403).json({
@@ -152,8 +163,8 @@ async function checkIn(req, res) {
       }
 
       const targetEmployee = await Employee.findOne({ employeeId: requestedId });
-      if (!targetEmployee) {
-        return res.status(404).json({ error: `Employee ID ${requestedId} not found.` });
+      if (!targetEmployee || targetEmployee.isActive === false) {
+        return res.status(404).json({ error: `Active Employee ID ${requestedId} not found.` });
       }
 
       // Anti-spoofing check 2: Requested Employee ID already bound to a different phone
@@ -279,10 +290,15 @@ async function checkOut(req, res) {
       });
     }
 
+    // Determine target requirement: check if today is a half-day
+    const holidayToday = await Holiday.findOne({ date: todayIST });
+    const targetMinutes = holidayToday?.type === 'HALF_DAY' ? HALF_DAY_SHIFT_MINUTES : REQUIRED_SHIFT_MINUTES;
+
     const checkOutTime = new Date();
     const { totalWorkedMinutes, shortfallMinutes } = calculateShiftDurations(
       shift.checkInTime,
-      checkOutTime
+      checkOutTime,
+      targetMinutes
     );
 
     shift.checkOutTime = checkOutTime;
@@ -290,7 +306,7 @@ async function checkOut(req, res) {
     shift.shortfallMinutes = shortfallMinutes;
     shift.dailyTask = trimmedTask;
     shift.status = 'COMPLETED';
-    shift.checkOutMethod = resolveCheckOutMethod(req);
+    shift.checkOutMethod = req.locationMethod || await resolveCheckOutMethod(req);
     await shift.save();
 
     return res.json({
@@ -352,11 +368,121 @@ function getVapidPublicKey(req, res) {
   });
 }
 
+/**
+ * GET /api/attendance/my-history?yearMonth=YYYY-MM&platform=...&screenSize=...
+ * Upgrade 5: Allows employees to view their own monthly summary and records without Admin intervention.
+ */
+async function getMyHistory(req, res) {
+  try {
+    const { platform = '', screenSize = '', yearMonth: rawYearMonth } = req.query;
+    const employee = await findBoundEmployee(req, platform, screenSize);
+
+    if (!employee) {
+      return res.status(401).json({
+        error: 'Device not recognized. Please register your phone on the home screen first.'
+      });
+    }
+
+    setDeviceTokenCookie(req, res, employee.registeredDeviceToken);
+
+    const todayIST = getTodayIST();
+    const currentYearMonth = todayIST.slice(0, 7);
+    const yearMonth = /^\d{4}-\d{2}$/.test(String(rawYearMonth || ''))
+      ? String(rawYearMonth)
+      : currentYearMonth;
+
+    const [records, holidays] = await Promise.all([
+      Attendance.find({
+        employeeId: employee.employeeId,
+        date: { $regex: `^${yearMonth}` }
+      })
+        .sort({ date: 1 })
+        .lean(),
+      Holiday.find({
+        date: { $regex: `^${yearMonth}` }
+      })
+        .sort({ date: 1 })
+        .lean()
+    ]);
+
+    const holidayByDate = new Map();
+    for (const h of holidays) {
+      holidayByDate.set(h.date, h);
+    }
+
+    const recordByDate = new Map();
+    for (const r of records) {
+      recordByDate.set(r.date, r);
+    }
+
+    // Calculate monthly summary
+    const [yearNum, monthNum] = yearMonth.split('-').map(Number);
+    const totalDaysInMonth = new Date(Date.UTC(yearNum, monthNum, 0)).getUTCDate();
+
+    let workingDaysElapsed = 0;
+    let presentDays = 0;
+    let absentDays = 0;
+    let totalWorkedMinutes = 0;
+    let totalShortfallMinutes = 0;
+
+    for (let d = 1; d <= totalDaysInMonth; d += 1) {
+      const dd = String(d).padStart(2, '0');
+      const dateStr = `${yearMonth}-${dd}`;
+      const utcDate = new Date(Date.UTC(yearNum, monthNum - 1, d));
+      const isSunday = utcDate.getUTCDay() === 0;
+      const holiday = holidayByDate.get(dateStr);
+      const isFullHoliday = holiday?.type === 'HOLIDAY';
+      const isHalfDay = holiday?.type === 'HALF_DAY';
+      const targetMinutes = isHalfDay ? HALF_DAY_SHIFT_MINUTES : REQUIRED_SHIFT_MINUTES;
+
+      // Only count working days that have already occurred or are today
+      if (dateStr <= todayIST && !isSunday && !isFullHoliday) {
+        workingDaysElapsed += 1;
+        const record = recordByDate.get(dateStr);
+
+        if (record) {
+          presentDays += 1;
+          const worked = Number(record.totalWorkedMinutes) || 0;
+          totalWorkedMinutes += worked;
+
+          if (record.status === 'COMPLETED') {
+            totalShortfallMinutes += Math.max(0, targetMinutes - worked);
+          } else if (record.status === 'MISSING_CHECKOUT') {
+            totalShortfallMinutes += targetMinutes;
+          }
+        } else if (dateStr < todayIST) {
+          // Past elapsed working day without attendance record
+          absentDays += 1;
+          totalShortfallMinutes += targetMinutes;
+        }
+      }
+    }
+
+    return res.json({
+      employee: sanitizeEmployee(employee),
+      yearMonth,
+      todayIST,
+      records,
+      holidays,
+      summary: {
+        workingDaysElapsed,
+        presentDays,
+        absentDays,
+        totalWorkedMinutes,
+        totalShortfallMinutes
+      }
+    });
+  } catch (err) {
+    console.error('getMyHistory error:', err);
+    return res.status(500).json({ error: 'Failed to load employee attendance history.' });
+  }
+}
+
 module.exports = {
   getSession,
   checkIn,
   checkOut,
   subscribePush,
-  getVapidPublicKey
+  getVapidPublicKey,
+  getMyHistory
 };
-

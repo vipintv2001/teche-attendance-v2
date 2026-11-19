@@ -25,8 +25,11 @@ const employeeSchema = new mongoose.Schema({
   pushSubscription: {
     type: Object,
     default: null
+  },
+  isActive: {
+    type: Boolean,
+    default: true
   }
 }, { timestamps: true });
 
 module.exports = mongoose.model('Employee', employeeSchema);
-

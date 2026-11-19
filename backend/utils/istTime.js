@@ -1,4 +1,5 @@
 const REQUIRED_SHIFT_MINUTES = 450; // 7 hours 30 minutes
+const HALF_DAY_SHIFT_MINUTES = 225; // 3 hours 45 minutes
 
 /**
  * Returns current date in Asia/Kolkata (IST) formatted as "YYYY-MM-DD".
@@ -32,19 +33,19 @@ function parseISTDateTime(dateStr, hhmmStr) {
 }
 
 /**
- * Computes worked and shortfall minutes against the 450-minute (7h 30m) requirement.
+ * Computes worked and shortfall minutes against the target requirement (default 450 min, or 225 for half-day).
  */
-function calculateShiftDurations(checkInTime, checkOutTime) {
+function calculateShiftDurations(checkInTime, checkOutTime, targetMinutes = REQUIRED_SHIFT_MINUTES) {
   const diffMs = checkOutTime.getTime() - checkInTime.getTime();
   const totalWorkedMinutes = Math.max(0, Math.floor(diffMs / 60000));
-  const shortfallMinutes = Math.max(0, REQUIRED_SHIFT_MINUTES - totalWorkedMinutes);
+  const shortfallMinutes = Math.max(0, targetMinutes - totalWorkedMinutes);
   return { totalWorkedMinutes, shortfallMinutes };
 }
 
 module.exports = {
   REQUIRED_SHIFT_MINUTES,
+  HALF_DAY_SHIFT_MINUTES,
   getTodayIST,
   parseISTDateTime,
   calculateShiftDurations
 };
-

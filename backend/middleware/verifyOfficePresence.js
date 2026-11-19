@@ -1,3 +1,5 @@
+const Settings = require('../models/Settings');
+
 /**
  * Computes Haversine distance in meters between two WGS84 coordinates.
  */
@@ -29,54 +31,73 @@ function extractClientIp(req) {
   return normalizeIp(forwarded || req.ip || '');
 }
 
-function verifyOfficePresence(req, res, next) {
-  const clientIp = extractClientIp(req);
-  const officePublicIp = normalizeIp(process.env.OFFICE_PUBLIC_IP || '');
-
-  // Primary Check: Institute Wi-Fi Public IP
-  if (officePublicIp && clientIp === officePublicIp) {
-    req.locationMethod = 'OFFICE_WIFI';
-    return next();
+async function getEffectiveOfficeIp() {
+  try {
+    const settings = await Settings.findOne({ key: 'global' }).lean();
+    if (settings && typeof settings.officePublicIp === 'string' && settings.officePublicIp.trim()) {
+      return normalizeIp(settings.officePublicIp);
+    }
+  } catch (err) {
+    console.error('Failed to read officePublicIp from Settings:', err.message);
   }
+  return normalizeIp(process.env.OFFICE_PUBLIC_IP || '');
+}
 
-  // Fallback Check: 100m GPS Geofence (for power cuts / Wi-Fi outages)
-  const { lat, lng } = req.body || {};
-  const parsedLat = Number(lat);
-  const parsedLng = Number(lng);
-  const officeLat = Number(process.env.OFFICE_LAT);
-  const officeLng = Number(process.env.OFFICE_LNG);
-  const allowedRadius = Number(process.env.ALLOWED_RADIUS_METERS || 100);
+async function verifyOfficePresence(req, res, next) {
+  try {
+    const clientIp = extractClientIp(req);
+    const officePublicIp = await getEffectiveOfficeIp();
 
-  const hasValidCoords =
-    lat !== undefined &&
-    lng !== undefined &&
-    lat !== null &&
-    lng !== null &&
-    lat !== '' &&
-    lng !== '' &&
-    Number.isFinite(parsedLat) &&
-    Number.isFinite(parsedLng) &&
-    Number.isFinite(officeLat) &&
-    Number.isFinite(officeLng);
-
-  if (hasValidCoords) {
-    const distance = haversineDistanceMeters(parsedLat, parsedLng, officeLat, officeLng);
-    if (distance <= allowedRadius) {
-      req.locationMethod = 'OFFICE_GPS';
+    // Primary Check: Institute Wi-Fi Public IP
+    if (officePublicIp && clientIp === officePublicIp) {
+      req.locationMethod = 'OFFICE_WIFI';
       return next();
     }
-  }
 
-  return res.status(403).json({
-    error:
-      'You must be connected to the TechE Institute Wi-Fi or within 100m of campus to Check-In.'
-  });
+    // Fallback Check: 100m GPS Geofence (for power cuts / Wi-Fi outages)
+    const { lat, lng } = req.body || {};
+    const parsedLat = Number(lat);
+    const parsedLng = Number(lng);
+    const officeLat = Number(process.env.OFFICE_LAT);
+    const officeLng = Number(process.env.OFFICE_LNG);
+    const allowedRadius = Number(process.env.ALLOWED_RADIUS_METERS || 100);
+
+    const hasValidCoords =
+      lat !== undefined &&
+      lng !== undefined &&
+      lat !== null &&
+      lng !== null &&
+      lat !== '' &&
+      lng !== '' &&
+      Number.isFinite(parsedLat) &&
+      Number.isFinite(parsedLng) &&
+      Number.isFinite(officeLat) &&
+      Number.isFinite(officeLng);
+
+    if (hasValidCoords) {
+      const distance = haversineDistanceMeters(parsedLat, parsedLng, officeLat, officeLng);
+      if (distance <= allowedRadius) {
+        req.locationMethod = 'OFFICE_GPS';
+        return next();
+      }
+    }
+
+    const actionLabel = req.originalUrl?.includes('check-out') || req.path?.includes('check-out')
+      ? 'Check-Out'
+      : 'Check-In';
+    return res.status(403).json({
+      error: `You must be connected to the TechE Institute Wi-Fi or within 100m of campus to ${actionLabel}.`
+    });
+  } catch (err) {
+    console.error('verifyOfficePresence error:', err);
+    return res.status(500).json({ error: 'Failed to verify office presence.' });
+  }
 }
 
 module.exports = {
   verifyOfficePresence,
   extractClientIp,
   normalizeIp,
-  haversineDistanceMeters
+  haversineDistanceMeters,
+  getEffectiveOfficeIp
 };
-

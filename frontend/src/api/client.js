@@ -35,7 +35,7 @@ async function apiRequest(path, options = {}) {
   if (!response.ok) {
     const error = new Error(
       (typeof data === 'object' && data?.error) ||
-      `Request failed with status ${response.status}`
+        `Request failed with status ${response.status}`
     );
     error.status = response.status;
     error.data = data;
@@ -75,39 +75,92 @@ export function postSubscribePush(payload) {
   });
 }
 
+export function fetchMyHistory(yearMonth, { platform, screenSize }) {
+  const params = new URLSearchParams({
+    yearMonth,
+    platform: platform || '',
+    screenSize: screenSize || ''
+  });
+  return apiRequest(`/api/attendance/my-history?${params.toString()}`);
+}
+
+export function fetchAdminMe() {
+  return apiRequest('/api/admin/me');
+}
+
 export function fetchMonthlyLedger(yearMonth) {
   const params = new URLSearchParams({ yearMonth });
   return apiRequest(`/api/admin/monthly-ledger?${params.toString()}`);
 }
 
-    export async function postAdminLogin(credentials) {
-    const data = await apiRequest('/api/admin/login', {
-      method: 'POST',
-      body: JSON.stringify(credentials)
-    });
-    if(data?.token) {
-      inMemoryAdminToken = data.token;
-    }
-  return data;
+export async function postAdminLogin(credentials) {
+  const data = await apiRequest('/api/admin/login', {
+    method: 'POST',
+    body: JSON.stringify(credentials)
+  });
+  if (data?.token) {
+    inMemoryAdminToken = data.token;
   }
+  return data;
+}
 
-    export async function postAdminLogout() {
-      inMemoryAdminToken = null;
-      return apiRequest('/api/admin/logout', {
-        method: 'POST'
-      });
-    }
+export async function postAdminLogout() {
+  try {
+    await apiRequest('/api/admin/logout', { method: 'POST' });
+  } finally {
+    inMemoryAdminToken = null;
+  }
+  return { authenticated: false };
+}
 
-    export function postManualOverride(payload) {
-      return apiRequest('/api/admin/manual-override', {
-        method: 'POST',
-        body: JSON.stringify(payload)
-      });
-    }
+export function fetchAdminSettings() {
+  return apiRequest('/api/admin/settings');
+}
 
-    export function postUnbindDevice(employeeId) {
-      return apiRequest('/api/admin/unbind-device', {
-        method: 'POST',
-        body: JSON.stringify({ employeeId })
-      });
-    }
+export function postUpdateOfficeIp(ip) {
+  return apiRequest('/api/admin/settings/office-ip', {
+    method: 'POST',
+    body: JSON.stringify({ ip })
+  });
+}
+
+export function postSaveHoliday(payload) {
+  return apiRequest('/api/admin/holidays', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function deleteHoliday(date) {
+  return apiRequest(`/api/admin/holidays/${encodeURIComponent(date)}`, {
+    method: 'DELETE'
+  });
+}
+
+export function postCreateEmployee(payload) {
+  return apiRequest('/api/admin/employees', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function patchUpdateEmployee(employeeId, payload) {
+  return apiRequest(`/api/admin/employees/${encodeURIComponent(employeeId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function postManualOverride(payload) {
+  return apiRequest('/api/admin/manual-override', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export function postUnbindDevice(employeeId) {
+  return apiRequest('/api/admin/unbind-device', {
+    method: 'POST',
+    body: JSON.stringify({ employeeId })
+  });
+}
